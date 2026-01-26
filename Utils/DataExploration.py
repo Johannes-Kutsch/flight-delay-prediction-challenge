@@ -18,19 +18,22 @@ def explore_dataframe(df: pd.DataFrame, target_feature: list[Any] = None, target
 
     categorical_features, continues_features = _sort_features(categorical_feature_names, df, numerical_feature_names)
 
-    if plot_data_spread and len(continues_features) > 0:
+    has_continues_features = len(continues_features) > 0
+    has_categorical_features = len(categorical_features) > 0
+
+    if plot_data_spread and has_continues_features:
         _plot_continues_features(df, continues_features)
 
-    if plot_data_spread and len(categorical_features) > 0:
+    if plot_data_spread and has_categorical_features:
         _plot_categorical_features(df, categorical_features)
 
     if plot_pairs and has_target_feature:
         _plot_pairs(df, categorical_features, continues_features, target_feature_name)
 
-    if plot_corr_matrix:
+    if plot_corr_matrix and len(categorical_features) > 1:
         _plot_correlation_matrix(df)
 
-    if has_target_feature and plot_target_correlation :
+    if plot_target_correlation and has_target_feature:
         _plot_target_correlation(df, target_feature_name, categorical_features + continues_features)
 
 

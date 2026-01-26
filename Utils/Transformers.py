@@ -56,11 +56,21 @@ class TypeCastTransformer(BaseEstimator, TransformerMixin):
         return X
 
 class RemapTransformer(BaseEstimator, TransformerMixin):
-    def __init__(self, column, mapping, new_column=None, drop_old_column = True):
+    def __init__(self, column, mapping, new_column=None, drop_old_column=True):
         """
-        column: Name of feature
-        mapping: dict i.e. {"male": True, "female": False}
-        new_column: Name der neuen Spalte, wenn None -> Original überschreiben
+        Transformer to remap values of a DataFrame column according to a dictionary.
+        Values not present in the mapping are kept unchanged.
+
+        Parameters
+        ----------
+        column : str
+            Name of the column to transform.
+        mapping : dict
+            Dictionary of old_value -> new_value.
+        new_column : str or None
+            Name of the new column. If None, overwrite original column.
+        drop_old_column : bool
+            Whether to drop the old column if new_column is set.
         """
         self.column = column
         self.mapping = mapping
@@ -72,14 +82,17 @@ class RemapTransformer(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         if self.column not in X.columns:
-            raise ValueError(f"Column '{self.column}' is no Feature inside this DataFrame")
+            raise ValueError(f"Column '{self.column}' is not present in the DataFrame")
 
         X = X.copy()
-        X[self.column] = X[self.column].map(self.mapping)
+
+        target_col = self.new_column if self.new_column else self.column
+
+        X[target_col] = X[self.column].replace(self.mapping)
 
         if self.new_column and self.drop_old_column:
-            X[self.new_column] = X[self.column]
             X = X.drop(columns=[self.column])
+
         return X
 
 class ThresholdToNaNTransformer(BaseEstimator, TransformerMixin):
@@ -285,3 +298,199 @@ class SequentialImputer(BaseEstimator, TransformerMixin):
 
         df_transformed = df_transformed.drop(columns=cols_to_drop)
         return df_transformed
+
+class DFMerger(BaseEstimator, TransformerMixin):
+    """
+    Transformer for merging a DataFrame with another DataFrame within a scikit-learn pipeline.
+
+    Parameters
+    ----------
+    df_to_merge : pd.DataFrame
+        The DataFrame to merge into the input X.
+    left_on : str
+        Column name in X to join on.
+    right_on : str
+        Column name in df_to_merge to join on.
+    how : str, default="left"
+        Type of merge: 'left', 'right', 'inner', 'outer'.
+    prefix : str, default=None
+        Optional prefix to prepend to all columns from df_to_merge in the merged DataFrame.
+    """
+
+    def __init__(self, df_to_merge, left_on, right_on, how="left", prefix=None):
+        self.df_to_merge = df_to_merge.copy()
+        self.left_on = left_on
+        self.right_on = right_on
+        self.how = how
+        self.prefix = prefix
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        df_to_merge = self.df_to_merge.copy()
+
+        if self.prefix:
+            df_to_merge = df_to_merge.add_prefix(self.prefix)
+
+        right_on = self.right_on
+        if self.prefix:
+            right_on = self.prefix + self.right_on
+
+        X_merged = X.merge(df_to_merge, how=self.how, left_on=self.left_on, right_on=right_on)
+
+        return X_merged
+
+class DistanceTransformer(BaseEstimator, TransformerMixin):
+    """
+    Compute the great-circle (Haversine) distance between two lat/long coordinates.
+
+    Parameters
+    ----------
+    lat_1 : str
+        Name of the first latitude column.
+    lon_1 : str
+        Name of the first longitude column.
+    lat_1 : str
+        Name of the second latitude column.
+    lon_2 : str
+        Name of the second longitude column.
+    new_feature_name : str, default="distance"
+        Name of the generated distance column.
+    """
+
+    def __init__(self, lat_1, lon_1,
+                 lat_2, lon_2,
+                 new_feature_name="distance_km"):
+        self.lat_1 = lat_1
+        self.lon_1 = lon_1
+        self.lat_2 = lat_2
+        self.lon_2 = lon_2
+        self.column_name = new_feature_name
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+
+        dep_lat_rad = np.radians(X[self.lat_1])
+        dep_lon_rad = np.radians(X[self.lon_1])
+        arr_lat_rad = np.radians(X[self.lat_2])
+        arr_lon_rad = np.radians(X[self.lon_2])
+
+        lat_distance = arr_lat_rad - dep_lat_rad
+        lon_distance = arr_lon_rad - dep_lon_rad
+
+        a = np.sin(lat_distance / 2) ** 2 + np.cos(dep_lat_rad) * np.cos(arr_lat_rad) * np.sin(lon_distance / 2) ** 2
+        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+        distance = 6371  * c
+
+        X[self.column_name] = distance
+        return X
+
+class TypeCastDatetimeTransformer(BaseEstimator, TransformerMixin):
+    """
+    Transformer to cast a column to datetime, with optional custom format.
+    """
+
+    def __init__(self, column, datetime_format=None):
+        self.column = column
+        self.datetime_format = datetime_format
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        X[self.column] = pd.to_datetime(
+            X[self.column],
+            format=self.datetime_format,
+            errors="raise"
+        )
+        return X
+
+class DatetimeDifferenceTransformer(BaseEstimator, TransformerMixin):
+    """
+    Compute the time difference between two datetime columns.
+
+    Parameters
+    ----------
+    start_column : str
+        Name of the start datetime column.
+    end_column : str
+        Name of the end datetime column.
+    new_column : str
+        Name of the output feature.
+    unit : str, default="hours"
+        Unit of the time difference.
+        One of: "seconds", "minutes", "hours", "days".
+    """
+
+    def __init__(self, start_column, end_column, new_column, unit="hours"):
+        self.start_column = start_column
+        self.end_column = end_column
+        self.new_column = new_column
+        self.unit = unit
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+
+        if self.start_column not in X.columns or self.end_column not in X.columns:
+            raise ValueError("Start or end datetime column not found in DataFrame")
+
+        delta = X[self.end_column] - X[self.start_column]
+
+        if self.unit == "seconds":
+            X[self.new_column] = delta.dt.total_seconds()
+        elif self.unit == "minutes":
+            X[self.new_column] = delta.dt.total_seconds() / 60
+        elif self.unit == "hours":
+            X[self.new_column] = delta.dt.total_seconds() / 3600
+        elif self.unit == "days":
+            X[self.new_column] = delta.dt.total_seconds() / 86400
+        else:
+            raise ValueError(f"Unsupported unit: {self.unit}")
+
+        return X
+
+class EqualityFlagTransformer(BaseEstimator, TransformerMixin):
+    """
+    Create a binary flag indicating whether two feature columns have identical values.
+
+    Parameters
+    ----------
+    column_a : str
+        Name of the first column.
+    column_b : str
+        Name of the second column.
+    new_column : str
+        Name of the output flag column.
+    """
+
+    def __init__(self, column_a, column_b, new_column,
+                 true_value=1, false_value=0):
+        self.column_a = column_a
+        self.column_b = column_b
+        self.new_column = new_column
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+
+        if self.column_a not in X.columns or self.column_b not in X.columns:
+            raise ValueError("One or both columns not found in DataFrame")
+
+        X[self.new_column] = (
+            X[self.column_a]
+            .eq(X[self.column_b])
+            .fillna(False)
+        )
+
+        return X

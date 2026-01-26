@@ -2,9 +2,38 @@
 import pandas as pd
 from pandas import DataFrame
 from typing import Any
+import re
 
 from Utils import StringHelperFunctions, Styling
 
+def get_unique_number_patterns(series):
+    """
+    Extract all unique number-length patterns from a string Series.
+
+    Parameters
+    ----------
+    series : pd.Series
+        Series containing string values
+
+    Returns
+    -------
+    list of str
+        Unique patterns in the order of occurrence
+    """
+    # transform each string to number-length pattern
+    transformed = series.astype(str).apply(
+        lambda x: re.sub(r"\d+", lambda m: str(len(m.group())), x)
+    )
+
+    # unique patterns, in order of appearance
+    seen = set()
+    unique_patterns = []
+    for pat in transformed:
+        if pat not in seen:
+            seen.add(pat)
+            unique_patterns.append(pat)
+
+    return unique_patterns
 
 def clean_feature_names(columns):
     """
