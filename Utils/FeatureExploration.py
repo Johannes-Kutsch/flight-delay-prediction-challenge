@@ -66,7 +66,7 @@ def explore_features(df, feature_mask:list[str] = None, target_feature_name:str 
 def _create_feature_descriptions(feature: pd.Series, data_count):
     dtype_str = _get_dtype_str(feature)
     non_null_str = _get_non_null_str(feature, data_count)
-    feature_summary = _get_feature_summary(feature, data_count)
+    feature_summary = _get_feature_summary(feature)
 
     return [feature.name, non_null_str, dtype_str, feature_summary]
 
@@ -87,9 +87,8 @@ def _get_non_null_str(feature, data_count):
     else:
         return f"{GRE_L}{n_non_null} non-null{RES}"
 
-def _get_feature_summary(feature, data_count):
+def _get_feature_summary(feature):
     num_unique = feature.nunique(dropna=True)
-    unique_ratio = num_unique / data_count if data_count > 0 else 0
 
     if pd.api.types.is_bool_dtype(feature.dtype):
         counts = feature.value_counts(dropna=True)
@@ -98,7 +97,7 @@ def _get_feature_summary(feature, data_count):
         summary += RES
         return summary
 
-    if (num_unique < 5 or unique_ratio < 0.05) and num_unique < 15:
+    if pd.api.types.is_categorical_dtype(feature.dtype) or num_unique < 15:
         counts = feature.value_counts(dropna=True)
         summary = f"{BLU_L}{num_unique} unique | "
         if len(counts) == 0:
@@ -107,6 +106,9 @@ def _get_feature_summary(feature, data_count):
             summary = f"{BLU_L}{num_unique} unique | "
             formatted_items = []
             for val, cnt in counts.items():
+                if len(formatted_items) > 10:
+                    break
+
                 if isinstance(val, (int, float, np.number)):
                     val_str = f"{val:.2f}"
                 else:

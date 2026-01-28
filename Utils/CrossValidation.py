@@ -10,8 +10,8 @@ from Utils.StringHelperFunctions import strip_ansi_codes
 from Utils.Styling import RED, YEL, GRE, ORA, RES
 
 
-def cross_validation_scoring(pipelines: object, X: object, y: object, folds: int = 5, scores: list[str] = None, verbose: bool = True,
-                             order_by: str = None) -> dict [str, Any]:
+def cross_validation_scoring(pipelines: object, X: object, y: object, scores: list[str] = None, folds: int = 5,
+                             verbose: bool = True, order_by: str = None) -> dict [str, Any]:
     """
     Perform cross-validation for multiple pipelines and return a DataFrame with evaluation metrics.
 
@@ -28,12 +28,8 @@ def cross_validation_scoring(pipelines: object, X: object, y: object, folds: int
     order_by : str, default=None
         Order by Metric
     scores : dict or None, default=None
-        Dictionary of scoring metrics If None, defaults to using using all score types
-        e.g. {
-            "mae": "neg_mean_absolute_error",
-            "rmse": "neg_root_mean_squared_error",
-            "r2": "r2"
-        }
+        List of scoring metrics If None, defaults to using all score types
+        ["mae", "mse", "rmse"]
     verbose : Logs results to stdout.
 
     Returns
@@ -220,13 +216,13 @@ def _is_score_ascending(name: str) -> bool:
 
 def _get_score_abbreviation(metric_name: str):
     if metric_name not in _COMMON_METRIC_ABBREVIATIONS:
-        print(f"WARNING: {YEL}{metric_name} has no valid abbreviation.{RES}")
+        print(f"{YEL}WARNING: Metric Name {metric_name} has no valid abbreviation.{RES}")
 
     return _COMMON_METRIC_ABBREVIATIONS.get(metric_name, metric_name)
 
 def _get_score_name(metric_abbreviation: str):
     if metric_abbreviation not in _COMMON_METRIC_NAMES:
-        print(f"{YEL}WARNING: {metric_abbreviation} has no valid name.{RES}")
+        print(f"{YEL}WARNING: Metric Abbreviation {metric_abbreviation} has no valid name.{RES}")
     return _COMMON_METRIC_NAMES.get(metric_abbreviation, metric_abbreviation)
 
 

@@ -51,7 +51,7 @@ def clean_feature_names(columns):
         cleaned.append(col)
     return cleaned
 
-def _aggregate_df(df: DataFrame, feature_mask: list[str] | None, target_feature: list[Any] | None,
+def _aggregate_df(df: DataFrame, feature_mask: list[str] | None, target_feature: Any | None,
                  target_feature_name: str | None) -> tuple[Any, Any, str]:
     has_target_feature = target_feature_name is not None or target_feature is not None
     df = df.copy()
