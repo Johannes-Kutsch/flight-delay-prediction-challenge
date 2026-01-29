@@ -1,12 +1,15 @@
-﻿import numpy as np
+﻿import warnings
+
+import numpy as np
 import pytz
 from sklearn.base import BaseEstimator, TransformerMixin
 import pandas as pd
 from sklearn.cluster import KMeans, DBSCAN
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import silhouette_score
 from sklearn.mixture import BayesianGaussianMixture
 from sklearn.neighbors import BallTree
-from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.preprocessing import StandardScaler, RobustScaler, PolynomialFeatures, FunctionTransformer
 
 from Utils import HelperFunctions
 
@@ -375,14 +378,12 @@ class DistanceTransformer(BaseEstimator, TransformerMixin):
         Name of the generated distance column.
     """
 
-    def __init__(self, lat_1, lon_1,
-                 lat_2, lon_2,
-                 new_feature_name="distance_km"):
+    def __init__(self, lat_1, lon_1, lat_2, lon_2, new_feature_name="distance_km"):
         self.lat_1 = lat_1
         self.lon_1 = lon_1
         self.lat_2 = lat_2
         self.lon_2 = lon_2
-        self.column_name = new_feature_name
+        self.new_feature_name = new_feature_name
 
     def fit(self, X, y=None):
         return self
@@ -402,7 +403,7 @@ class DistanceTransformer(BaseEstimator, TransformerMixin):
         c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
         distance = 6371  * c
 
-        X[self.column_name] = distance
+        X[self.new_feature_name] = distance
         return X
 
 class TypeCastDatetimeTransformer(BaseEstimator, TransformerMixin):
@@ -883,3 +884,239 @@ class DBSCANGeoClustererCentroid(BaseEstimator, TransformerMixin):
 
         X_out[feature_name] = nearest_cluster
         return X_out[[feature_name]]
+
+class SmoothedTargetMeanEncoder(BaseEstimator, TransformerMixin):
+    def __init__(self, feature, new_feature=None, smoothing=1.0):
+        """
+        Target Mean Encoder for a categorical feature.
+
+        Parameters
+        ----------
+        feature : str
+            The name of the categorical feature to encode.
+        new_feature : str, optional
+            Name of the new encoded feature. If None, the original feature is overwritten.
+        smoothing : float, default=1.0
+            Smoothing factor to regularize mean estimates for categories with few samples.
+        """
+        self.feature = feature
+        self.new_feature = new_feature
+        self.smoothing = smoothing
+        self.mapping_ = None
+        self.global_mean_ = None
+
+    def fit(self, X, y):
+        X = X.copy()
+        y = y.copy()
+
+        mask = y > 0
+        X = X[mask]
+        y = y[mask]
+
+        self.global_mean_ = y.mean()
+
+        stats = y.groupby(X[self.feature]).agg(['mean', 'count'])
+        self.mapping_ = ((stats['count'] * stats['mean'] + self.smoothing * self.global_mean_) /
+                         (stats['count'] + self.smoothing)).to_dict()
+
+        return self
+
+    def transform(self, X):
+        X = pd.DataFrame(X).copy()
+        feature_name = self.new_feature if self.new_feature else self.feature
+        X[feature_name] = X[self.feature].map(self.mapping_).fillna(self.global_mean_)
+        return X
+
+class SmoothedTargetPositiveRateEncoder(BaseEstimator, TransformerMixin):
+    def __init__(self, feature, new_feature=None, smoothing=1.0):
+        """
+        Encoder for a single categorical feature that computes the probability of y > 0.
+
+        Parameters
+        ----------
+        feature : str
+            Name of the categorical feature to encode.
+        new_feature : str, optional
+            Name of the new encoded feature. If None, the original feature is overwritten.
+        smoothing : float, default=1.0
+            Smoothing factor to regularize estimates for categories with few samples.
+        """
+        self.feature = feature
+        self.new_feature = new_feature
+        self.smoothing = smoothing
+        self.mapping_ = None
+        self.global_rate_ = None
+
+    def fit(self, X, y):
+        X = pd.DataFrame(X)
+        y = pd.Series(y)
+
+        self.global_rate_ = (y > 0).mean()
+
+        stats = y.groupby(X[self.feature]).apply(lambda s: (s > 0).sum()).to_frame('count_positive')
+        stats['count_total'] = y.groupby(X[self.feature]).count()
+        stats['rate'] = (stats['count_positive'] + self.smoothing * self.global_rate_) / (stats['count_total'] + self.smoothing)
+
+        self.mapping_ = stats['rate'].to_dict()
+        return self
+
+    def transform(self, X):
+        X = pd.DataFrame(X).copy()
+        feature_name = self.new_feature if self.new_feature else self.feature
+        X[feature_name] = X[self.feature].map(self.mapping_).fillna(self.global_rate_)
+        return X
+
+class NumericPolyLogTransformer(BaseEstimator, TransformerMixin):
+    """
+    Applies imputation -> shifts to min 0 -> log1p -> robust scaling -> polynomial features
+    to selected numeric columns and returns the full DataFrame.
+
+    The original features are replaced by their polynomial expansions.
+    All other columns remain unchanged.
+    """
+
+    def __init__(self, features, degree=2, include_bias=False):
+        self.features = features
+        self.degree = degree
+        self.include_bias = include_bias
+        self.imputer_ = None
+        self.scaler_ = None
+        self.poly_ = None
+        self.poly_feature_names_ = None
+
+    def fit(self, X, y=None):
+        X = pd.DataFrame(X)
+
+        self.imputer_ = SimpleImputer(strategy="median")
+        self.scaler_ = RobustScaler()
+        self.poly_ = PolynomialFeatures(
+            degree=self.degree,
+            include_bias=self.include_bias
+        )
+
+        X_sel = X[self.features]
+
+        X_imp = self.imputer_.fit_transform(X_sel)
+        min_vals = X_imp.min()
+        X_shifted = X_imp - min_vals
+        X_log = np.log1p(X_shifted)
+        X_scaled = self.scaler_.fit_transform(X_log)
+
+        self.poly_.fit(X_scaled)
+        self.poly_feature_names_ = self.poly_.get_feature_names_out(self.features)
+
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+
+        X_sel = X[self.features]
+
+        X_imp = self.imputer_.transform(X_sel)
+        min_vals = X_imp.min()
+        X_shifted = X_imp - min_vals
+        X_log = np.log1p(X_shifted)
+        X_scaled = self.scaler_.transform(X_log)
+        X_poly = self.poly_.transform(X_scaled)
+
+        X_poly_df = pd.DataFrame(
+            X_poly,
+            columns=self.poly_feature_names_,
+            index=X.index
+        )
+
+        X = X.drop(columns=self.features)
+        X = pd.concat([X, X_poly_df], axis=1)
+
+        return X
+
+class InvertibleQuantileCapper(BaseEstimator, TransformerMixin):
+    """
+    Caps values outside quantile bounds and supports inverse_transform.
+
+    Parameters
+    ----------
+    lower_quantile : float
+        Lower quantile (e.g., 0.05 for 5%).
+    upper_quantile : float
+        Upper quantile (e.g., 0.95 for 95%).
+    """
+
+    def __init__(self, lower_quantile=0.05, upper_quantile=0.95):
+        self.lower_quantile = lower_quantile
+        self.upper_quantile = upper_quantile
+        self.lower_bound_ = None
+        self.upper_bound_ = None
+        self._before_clip_ = None
+
+    def fit(self, y, X=None):
+        y = pd.Series(y)
+        self.lower_bound_ = y.quantile(self.lower_quantile)
+        self.upper_bound_ = y.quantile(self.upper_quantile)
+        return self
+
+    def transform(self, y):
+        y = pd.Series(y)
+        self._before_clip_ = y.copy()
+        return y.clip(lower=self.lower_bound_, upper=self.upper_bound_)
+
+    def inverse_transform(self, y_capped):
+        """
+        Revert capping. For values that were clipped, this just returns
+        the original training values (the ones stored in fit).
+        """
+        original = self._before_clip_
+
+        return original.where(
+            (original >= self.lower_bound_) & (original <= self.upper_bound_),
+            original
+        )
+
+class LogRobustYScaler(BaseEstimator, TransformerMixin):
+    """
+    Transformer that applies log1p transformation followed by RobustScaler.
+    Fully invertible for test and production data.
+
+    Parameters
+    ----------
+    with_centering : bool, default=True
+        Whether to center data with median in RobustScaler.
+    with_scaling : bool, default=True
+        Whether to scale data with IQR in RobustScaler.
+    """
+
+    def __init__(self, with_centering=True, with_scaling=True):
+        self.with_centering = with_centering
+        self.with_scaling = with_scaling
+        self.log_transformer_ = FunctionTransformer(func=np.log1p, inverse_func=np.expm1)
+        self.scaler_ = RobustScaler(with_centering=self.with_centering,
+                                    with_scaling=self.with_scaling)
+
+    def fit(self, X, y):
+        y_numeric = self._ensure_numeric(y)
+        y_log = self.log_transformer_.fit_transform(y_numeric)
+        self.scaler_.fit(y_log)
+        return self
+
+    def transform(self, y):
+        y_numeric = self._ensure_numeric(y)
+        y_log = self.log_transformer_.transform(y_numeric)
+        y_scaled = self.scaler_.transform(y_log)
+        return y_scaled
+
+    def inverse_transform(self, y_scaled):
+        y_log = self.scaler_.inverse_transform(y_scaled)
+        y_original = self.log_transformer_.inverse_transform(y_log)
+        return y_original
+
+    def _ensure_numeric(self, y):
+        if isinstance(y, pd.DataFrame):
+            if y.shape[1] == 1:
+                y = y.iloc[:, 0]
+            else:
+                raise ValueError("Expected y to be a Series or single-column DataFrame")
+        y_numeric = pd.to_numeric(y, errors='coerce')
+        if y_numeric.isna().any():
+            n_na = y_numeric.isna().sum()
+            warnings.warn(f"{n_na} values could not be converted to numeric and were set to NaN.")
+        return y_numeric.values.reshape(-1, 1)
