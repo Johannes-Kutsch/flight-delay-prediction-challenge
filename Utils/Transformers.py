@@ -3,6 +3,8 @@ import pytz
 from sklearn.base import BaseEstimator, TransformerMixin
 import pandas as pd
 from sklearn.cluster import KMeans, DBSCAN
+from sklearn.metrics import silhouette_score
+from sklearn.mixture import BayesianGaussianMixture
 from sklearn.neighbors import BallTree
 from sklearn.preprocessing import StandardScaler, RobustScaler
 
@@ -535,10 +537,11 @@ class EqualityFlagTransformer(BaseEstimator, TransformerMixin):
         Name of the output flag column.
     """
 
-    def __init__(self, column_a, column_b, new_column):
+    def __init__(self, column_a, column_b, new_column, invert_output=False):
         self.column_a = column_a
         self.column_b = column_b
         self.new_column = new_column
+        self.invert_output = invert_output
 
     def fit(self, X, y=None):
         return self
@@ -549,11 +552,10 @@ class EqualityFlagTransformer(BaseEstimator, TransformerMixin):
         if self.column_a not in X.columns or self.column_b not in X.columns:
             raise ValueError("One or both columns not found in DataFrame")
 
-        X[self.new_column] = (
-            X[self.column_a]
-            .eq(X[self.column_b])
-            .fillna(False)
-        )
+        X[self.new_column] = X[self.column_a].eq(X[self.column_b]).fillna(False)
+
+        if self.invert_output:
+            X[self.new_column] = ~X[self.new_column]
 
         return X
 
@@ -721,10 +723,8 @@ class DateTimeFeatureExtractor(BaseEstimator, TransformerMixin):
 
 class TargetCategoryClusterer(BaseEstimator, TransformerMixin):
     """
-    Clusters a categorical feature based on the statistical profile of a target variable.
-
-    Each category is represented by aggregated target statistics
-    (e.g. mean, median, std, count), which are then scaled and clustered.
+    Clusters a categorical feature based on the statistical profile of a target variable,
+    using Bayesian Gaussian Mixture with ELBO and Silhouette-Score for optimization.
 
     The resulting cluster label is mapped back to each row as a new feature.
 
@@ -732,47 +732,68 @@ class TargetCategoryClusterer(BaseEstimator, TransformerMixin):
     ----------
     cat_feature : str
         Name of the categorical column to cluster (e.g. 'departure_airport').
-
-    n_clusters : int, default=5
-        Number of clusters to create.
-
+    data_feature : str
+        Name of the target/continuous feature used for clustering.
+    n_clusters_max : int, default=10
+        Maximum number of clusters to try.
     agg_funcs : list of str, default=['mean', 'std', 'median', 'count']
         Aggregation functions applied to the target variable per category.
-
     scaler : sklearn transformer, default=RobustScaler()
         Scaler applied to aggregated features before clustering.
-        Should implement fit() and transform().
-
+    elbo_threshold : float, default=0.01
+        Minimum cluster weight to keep a cluster (based on ELBO).
+    silhouette_optimize : bool, default=True
+        Whether to use Silhouette-Score to refine cluster selection.
     new_feature_name : str or None, default=None
-        Name of the resulting cluster feature.
-        If None, the original categorical column is overwritten.
-
+        Name of the resulting cluster feature. If None, the original categorical column is overwritten.
     random_state : int, default=42
-        Random state used by KMeans for reproducibility.
+        Random state used for reproducibility.
     """
 
-    def __init__(self, cat_feature: str, data_feature: str, n_clusters: int = 5, agg_funcs=None, scaler=None, new_feature_name: str | None = None, random_state: int = 42, ):
+
+    def __init__(self, cat_feature: str, data_feature: str, n_clusters_max: int = 10, agg_funcs=None, scaler=None,
+                 elbo_threshold: float = 0.01, new_feature_name: str | None = None, random_state: int = 42, ):
         self.cat_feature = cat_feature
         self.data_feature = data_feature
-        self.n_clusters = n_clusters
+        self.n_clusters_max = n_clusters_max
         self.agg_funcs = agg_funcs or ['mean', 'std', 'median', 'count']
         self.scaler = scaler or RobustScaler()
+        self.elbo_threshold = elbo_threshold
         self.new_feature_name = new_feature_name
         self.random_state = random_state
+
         self.clusterer_ = None
         self.categories_ = None
 
     def fit(self, X: pd.DataFrame, y = None):
         df = X[[self.cat_feature, self.data_feature]].copy()
-
         category_stats = df.groupby(self.cat_feature)[self.data_feature].agg(self.agg_funcs).fillna(0)
-
         X_scaled = self.scaler.fit_transform(category_stats)
 
-        self.clusterer_ = KMeans(n_clusters=self.n_clusters, random_state=self.random_state, n_init="auto")
-        self.clusterer_.fit(X_scaled)
+        best_score = -1
+        best_labels = None
 
-        category_stats['cluster'] = self.clusterer_.labels_
+        for n in range(2, self.n_clusters_max + 1):
+            self.clusterer_ = BayesianGaussianMixture(
+                n_components=n,
+                weight_concentration_prior_type='dirichlet_process',
+                random_state=self.random_state
+            )
+            self.clusterer_.fit(X_scaled)
+            labels = self.clusterer_.predict(X_scaled)
+
+            keep_clusters = [i for i, w in enumerate(self.clusterer_.weights_) if w > self.elbo_threshold]
+            labels_filtered = np.array([l if l in keep_clusters else -1 for l in labels])
+
+            valid_mask = labels_filtered != -1
+            if len(set(labels_filtered[valid_mask])) > 1:
+                score = silhouette_score(X_scaled[valid_mask], labels_filtered[valid_mask])
+                if score > best_score:
+                    best_score = score
+                    best_labels = labels_filtered
+
+
+        category_stats['cluster'] = best_labels
         self.categories_ = category_stats['cluster'].to_dict()
 
         return self
@@ -782,10 +803,9 @@ class TargetCategoryClusterer(BaseEstimator, TransformerMixin):
 
         feature_name = self.new_feature_name or self.cat_feature
 
-        X_out[feature_name] = X_out[self.cat_feature].map(self.categories_).fillna(-1).astype(int)
+        X_out[feature_name] = X_out[self.cat_feature].map(self.categories_).fillna(-1).astype("category")
 
         return X_out
-
 
 class DBSCANGeoClustererCentroid(BaseEstimator, TransformerMixin):
     """
@@ -863,20 +883,3 @@ class DBSCANGeoClustererCentroid(BaseEstimator, TransformerMixin):
 
         X_out[feature_name] = nearest_cluster
         return X_out[[feature_name]]
-
-class RowFilterWithMask(BaseEstimator, TransformerMixin):
-    """
-    Filters rows where a boolean column is True.
-    Returns only the remaining rows.
-    """
-    def __init__(self, filter_col):
-        self.filter_col = filter_col
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        # Mask erstellen: True = behalten, False = ignorieren
-        mask = ~X[self.filter_col].astype(bool)
-        X_filtered = X[mask].reset_index(drop=True)
-        return X_filtered
