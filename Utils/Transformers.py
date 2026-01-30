@@ -924,6 +924,7 @@ class SmoothedTargetMeanEncoder(BaseEstimator, TransformerMixin):
     def transform(self, X):
         X = pd.DataFrame(X).copy()
         feature_name = self.new_feature if self.new_feature else self.feature
+        print("global_mean_", self.global_mean_)
         X[feature_name] = X[self.feature].map(self.mapping_).fillna(self.global_mean_)
         return X
 
@@ -1003,7 +1004,12 @@ class NumericPolyLogTransformer(BaseEstimator, TransformerMixin):
         X_scaled = self.scaler_.fit_transform(X_log)
 
         self.poly_.fit(X_scaled)
-        self.poly_feature_names_ = self.poly_.get_feature_names_out(self.features)
+        poly_feature_names = self.poly_.get_feature_names_out(self.features)
+        self.poly_feature_names_ = [
+            " ".join(sorted(name.split())) for name in poly_feature_names
+        ]
+
+
 
         return self
 
@@ -1029,48 +1035,6 @@ class NumericPolyLogTransformer(BaseEstimator, TransformerMixin):
         X = pd.concat([X, X_poly_df], axis=1)
 
         return X
-
-class InvertibleQuantileCapper(BaseEstimator, TransformerMixin):
-    """
-    Caps values outside quantile bounds and supports inverse_transform.
-
-    Parameters
-    ----------
-    lower_quantile : float
-        Lower quantile (e.g., 0.05 for 5%).
-    upper_quantile : float
-        Upper quantile (e.g., 0.95 for 95%).
-    """
-
-    def __init__(self, lower_quantile=0.05, upper_quantile=0.95):
-        self.lower_quantile = lower_quantile
-        self.upper_quantile = upper_quantile
-        self.lower_bound_ = None
-        self.upper_bound_ = None
-        self._before_clip_ = None
-
-    def fit(self, y, X=None):
-        y = pd.Series(y)
-        self.lower_bound_ = y.quantile(self.lower_quantile)
-        self.upper_bound_ = y.quantile(self.upper_quantile)
-        return self
-
-    def transform(self, y):
-        y = pd.Series(y)
-        self._before_clip_ = y.copy()
-        return y.clip(lower=self.lower_bound_, upper=self.upper_bound_)
-
-    def inverse_transform(self, y_capped):
-        """
-        Revert capping. For values that were clipped, this just returns
-        the original training values (the ones stored in fit).
-        """
-        original = self._before_clip_
-
-        return original.where(
-            (original >= self.lower_bound_) & (original <= self.upper_bound_),
-            original
-        )
 
 class LogRobustYScaler(BaseEstimator, TransformerMixin):
     """
