@@ -39,8 +39,9 @@ Tunisair is the national airline of Tunisia, founded in 1948, operating internat
 ├── data/                 # Data used for the Project
 ├── Models/               # Trained models
 ├── Models/Tests/         # Zindi submission test files
-├── Notebooks_Personal/   # EDA and modeling notebooks
+├── Notebooks_Personal/   # Personal EDA and modeling notebooks
 ├── Utils/                # Utility functions for EDA and pipelines
+├── presentation.pdf
 ├── requirements.txt
 └── README.md
 ```
